@@ -7,6 +7,8 @@ import tkinter as tk
 from tkinter import messagebox
 
 def recognize_face():
+    import threading
+
     # Load student data from CSV
     students = {}
     try:
@@ -56,19 +58,18 @@ def recognize_face():
 
                     img = Image.open(path).convert('L')
                     img_np = np.array(img, 'uint8')
-                
-                    # More sensitive detection parameters
+
                     detected_faces = face_cascade.detectMultiScale(
-                        img_np, 
-                        scaleFactor=1.1, 
+                        img_np,
+                        scaleFactor=1.1,
                         minNeighbors=5,
                         minSize=(30, 30)
                     )
-                                
+
                     for (x, y, w, h) in detected_faces:
                         faces.append(img_np[y:y+h, x:x+w])
                         labels.append(labels_dict[label])
-                    
+
                 except Exception as e:
                     print(f"Error processing {file}: {str(e)}")
 
@@ -79,56 +80,66 @@ def recognize_face():
     # Train the recognizer
     recognizer.train(faces, np.array(labels))
 
-    # Start video capture
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    # Use a mutable flag so the thread can be stopped cleanly
+    stop_flag = [False]
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    def camera_loop():
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        detected_faces = face_cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.1,  # Match training parameter
-            minNeighbors=5,
-            minSize=(30, 30)
-        )
+        cv2.namedWindow('Face Recognition')
 
-        for (x, y, w, h) in detected_faces:
-            roi_gray = gray[y:y+h, x:x+w]
-        
-            label_id, confidence = recognizer.predict(roi_gray)
-        
-            label = None
-            for roll_no, lid in labels_dict.items():
-                if lid == label_id:
-                    label = roll_no
-                    break
+        while not stop_flag[0]:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-            # Critical fix: Strict confidence threshold
-            if label and confidence < 70:  # Changed threshold
-                student = students.get(label, {})
-                name = student.get('name', 'Unknown')
-                dept = student.get('department', 'Unknown')
-            
-                cv2.putText(frame, f"Roll: {label}", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-                cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,0), 2)
-            else:
-                cv2.putText(frame, "Unknown", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-                cv2.rectangle(frame, (x,y), (x+w,y+h), (0,0,255), 2)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            detected_faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(30, 30)
+            )
 
-        cv2.imshow('Face Recognition', frame)
+            for (x, y, w, h) in detected_faces:
+                roi_gray = gray[y:y+h, x:x+w]
+                label_id, confidence = recognizer.predict(roi_gray)
 
-        if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
-            break
+                label = None
+                for roll_no, lid in labels_dict.items():
+                    if lid == label_id:
+                        label = roll_no
+                        break
 
-    cap.release()
-    cv2.destroyAllWindows()
+                if label and confidence < 70:
+                    student = students.get(label, {})
+                    name = student.get('name', 'Unknown')
+                    dept = student.get('department', 'Unknown')
+                    cv2.putText(frame, f"Roll: {label} | {name}", (x, y - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, "Unknown", (x, y - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+            cv2.imshow('Face Recognition', frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            # Stop on ESC key OR if the OpenCV window is closed
+            if key == 27:
+                break
+            if cv2.getWindowProperty('Face Recognition', cv2.WND_PROP_VISIBLE) < 1:
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+    # Run camera in a daemon thread so it doesn't block Tkinter
+    t = threading.Thread(target=camera_loop, daemon=True)
+    t.start()
 
 if __name__ == "__main__":
     recognize_face()
